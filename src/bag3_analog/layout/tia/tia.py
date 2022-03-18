@@ -28,7 +28,7 @@ class TIARes(ResArrayBase):
 
     @classmethod
     def get_schematic_class(cls) -> Optional[Type[Module]]:
-        return bag_vco__res
+        return bag3_analog__tia_res
 
     @classmethod
     def get_params_info(cls) -> Mapping[str, str]:
