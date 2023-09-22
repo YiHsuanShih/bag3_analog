@@ -33,6 +33,7 @@ from pybag.enum import RoundMode, Direction
 from pybag.core import BBox, BBoxArray
 
 from bag.util.immutable import Param
+from bag.util.math import HalfInt
 from bag.design.module import Module
 from bag.layout.routing.base import TrackID, WireArray
 from bag.layout.template import TemplateDB
@@ -42,6 +43,7 @@ from xbase.layout.res.base import ResBasePlaceInfo, ResArrayBase
 from bag3_analog.layout.util import translate_layers
 
 from ...schematic.res_ladder import bag3_analog__res_ladder
+from ...schematic.res_ladder_parallel import bag3_analog__res_ladder_parallel
 
 
 class ResLadder(ResArrayBase):
@@ -64,7 +66,8 @@ class ResLadder(ResArrayBase):
 
     @classmethod
     def get_schematic_class(cls) -> Optional[Type[Module]]:
-        return bag3_analog__res_ladder
+        return bag3_analog__res_ladder_parallel
+        # return bag3_analog__res_ladder
 
     @classmethod
     def get_params_info(cls) -> Dict[str, str]:
@@ -100,27 +103,56 @@ class ResLadder(ResArrayBase):
 
         unit_metal_dict = self._draw_unit_metal()
         full_metal_dict = self._array_metal_and_connect(unit_metal_dict)
-        self._connect_ladder(full_metal_dict)
-        self._connect_dummies(full_metal_dict)
+        # self._connect_ladder(full_metal_dict)
+        self._connect_ladder_parallel(full_metal_dict)
+        # self._connect_dummies(full_metal_dict)
+        self._connect_dummies_parallel(full_metal_dict)
         self._connect_supplies_and_substrate(full_metal_dict)
-        mres_info = self._connect_top(full_metal_dict)
-
+        # mres_info = self._connect_top(full_metal_dict)
+        mres_info = self._connect_top_parallel(full_metal_dict)
+        # mres_info = [1, 2, 3]
         ny_dum: int = self.params['ny_dum']
         self._core_coord0 = pinfo.height * ny_dum
-
-        self.sch_params = dict(
+        shared_params = dict(
             w=pinfo.w_res,
             l=pinfo.l_res,
             res_type=pinfo.res_type,
-            nx=pinfo.nx,
-            ny=pinfo.ny,
-            nx_dum=self.params['nx_dum'],
-            ny_dum=ny_dum,
             top_vdd=self.params['top_vdd'],
             bot_vss=self.params['bot_vss'],
             sup_name=self._sup_name,
             mres_info=mres_info,
         )
+        rladder_main_params=dict(
+            nx=pinfo.nx - 1,
+            ny=pinfo.ny,
+            nx_dum=self.params['nx_dum'],
+            ny_dum=ny_dum,
+            **shared_params,
+        )
+        rladder_sub_params=dict(
+            nx=1,
+            ny=pinfo.ny,
+            nx_dum=0,
+            ny_dum=ny_dum,
+            **shared_params,
+        )
+        self.sch_params = dict(
+            rladder_main_params=rladder_main_params,
+            rladder_sub_params=rladder_sub_params,
+        )
+        # self.sch_params = dict(
+        #     w=pinfo.w_res,
+        #     l=pinfo.l_res,
+        #     res_type=pinfo.res_type,
+        #     nx=pinfo.nx,
+        #     ny=pinfo.ny,
+        #     nx_dum=self.params['nx_dum'],
+        #     ny_dum=ny_dum,
+        #     top_vdd=self.params['top_vdd'],
+        #     bot_vss=self.params['bot_vss'],
+        #     sup_name=self._sup_name,
+        #     mres_info=mres_info,
+        # )
 
     def _draw_unit_metal(self) -> Dict[int, List[Union[WireArray, List[WireArray]]]]:
         """Draws metal wires over a unit cell. Returns all the metal wire arrays"""
@@ -289,56 +321,23 @@ class ResLadder(ResArrayBase):
         nx_dum = self.params['nx_dum']
         ny_dum = self.params['ny_dum']
 
-        nx_core = nx - 2 * nx_dum
-        ny_core = ny - 2 * ny_dum
+        # TODO: simplify the logic here
+        # Connect from bottom up
+        self._connect_ladder_helper(full_metal_dict, x_start=nx_dum, y_start=ny_dum, x_end=nx-nx_dum, y_end=ny-ny_dum)
 
-        conn_layer = self.place_info.conn_layer
-        hm_layer = conn_layer + 1
-        vm_layer = hm_layer + 1
+    def _connect_ladder_parallel(self,
+                        full_metal_dict: Dict[Tuple[int, int], Dict[int, List[Union[WireArray, List[WireArray]]]]]):
+        """Connects up the internal ladder"""
+
+        nx = self.place_info.nx
+        ny = self.place_info.ny
+        nx_dum = self.params['nx_dum']
+        ny_dum = self.params['ny_dum']
 
         # TODO: simplify the logic here
         # Connect from bottom up
-        for yidx in range(ny_core):
-            for xidx in range(nx_core):
-                unit_dict = full_metal_dict[(nx_dum + xidx, ny_dum + yidx)]
-                # Avoid using connect warrs. We want to match the wires
-                if xidx == 0:
-                    self.draw_vias_on_intersections(
-                        unit_dict[hm_layer][-4 if yidx % 2 else 3],
-                        unit_dict[vm_layer][2])
-                    self.draw_vias_on_intersections(
-                        [unit_dict[hm_layer][3 if yidx % 2 else -4],
-                         unit_dict[hm_layer][1 if yidx % 2 else -2][-1]],
-                        unit_dict[vm_layer][3])
-                elif xidx == nx_core - 1:
-                    self.draw_vias_on_intersections(
-                        unit_dict[hm_layer][3 if yidx % 2 else -4],
-                        unit_dict[vm_layer][2])
-                    self.draw_vias_on_intersections(
-                        unit_dict[hm_layer][-4 if yidx % 2 else 3],
-                        unit_dict[vm_layer][1])
-                    self.draw_vias_on_intersections(
-                        unit_dict[hm_layer][1 if (yidx % 2) ^ (nx_core % 2) else -2],
-                        unit_dict[vm_layer][1])
-                else:
-                    if xidx % 2 == 1:
-                        self.draw_vias_on_intersections(
-                            [unit_dict[hm_layer][3 if yidx % 2 else -4],
-                             unit_dict[hm_layer][1 if yidx % 2 else -2][0]],
-                            unit_dict[vm_layer][1])
-                        self.draw_vias_on_intersections(
-                            [unit_dict[hm_layer][-4 if yidx % 2 else 3],
-                             unit_dict[hm_layer][-2 if yidx % 2 else 1][-1]],
-                            unit_dict[vm_layer][-2])
-                    else:
-                        self.draw_vias_on_intersections(
-                            [unit_dict[hm_layer][3 if yidx % 2 else -4],
-                             unit_dict[hm_layer][1 if yidx % 2 else -2][-1]],
-                            unit_dict[vm_layer][-2])
-                        self.draw_vias_on_intersections(
-                            [unit_dict[hm_layer][-4 if yidx % 2 else 3],
-                             unit_dict[hm_layer][-2 if yidx % 2 else 1][0]],
-                            unit_dict[vm_layer][1])
+        self._connect_ladder_helper(full_metal_dict, x_start=nx_dum, y_start=ny_dum, x_end=nx-nx_dum-1, y_end=ny-ny_dum)
+        self._connect_ladder_helper(full_metal_dict, x_start=nx-nx_dum-1, y_start=ny_dum, x_end=nx-nx_dum, y_end=ny-ny_dum)
 
     def _connect_dummies(self,
                          full_metal_dict: Dict[Tuple[int, int], Dict[int, List[Union[WireArray, List[WireArray]]]]]):
@@ -363,6 +362,38 @@ class ResLadder(ResArrayBase):
                 unit_dict = full_metal_dict[(xidx, yidx)]
                 # Skip the top and bottoms
                 if not (xidx == nx_dum and yidx == ny_dum - 1):
+                    self.draw_vias_on_intersections(
+                        [unit_dict[hm_layer][-1], unit_dict[hm_layer][-4]], unit_dict[vm_layer][2])
+                if not (yidx == ny - ny_dum and xidx == (nx - nx_dum - 1 if ny_core % 2 else nx_dum)):
+                    self.draw_vias_on_intersections(
+                        [unit_dict[hm_layer][0], unit_dict[hm_layer][3]], unit_dict[vm_layer][2])
+                self.draw_vias_on_intersections(
+                    [unit_dict[hm_layer][3], unit_dict[hm_layer][-4]],
+                    [unit_dict[vm_layer][1], unit_dict[vm_layer][-2]])
+
+    def _connect_dummies_parallel(self,
+                         full_metal_dict: Dict[Tuple[int, int], Dict[int, List[Union[WireArray, List[WireArray]]]]]):
+        """Connects up PLUS and MINUS pins of the dummies"""
+
+        nx = self.place_info.nx
+        ny = self.place_info.ny
+        nx_dum = self.params['nx_dum']
+        ny_dum = self.params['ny_dum']
+
+        ny_core = ny - 2 * ny_dum
+
+        conn_layer = self.place_info.conn_layer
+        hm_layer = conn_layer + 1
+        vm_layer = hm_layer + 1
+
+        # Connect from bottom up
+        for yidx in range(ny):
+            for xidx in range(nx):
+                if nx_dum <= xidx <= nx - nx_dum - 1 and ny_dum <= yidx <= ny - ny_dum - 1:
+                    continue
+                unit_dict = full_metal_dict[(xidx, yidx)]
+                # Skip the top and bottoms
+                if not ((xidx == nx_dum or xidx == nx - nx_dum - 1) and yidx == ny_dum - 1):
                     self.draw_vias_on_intersections(
                         [unit_dict[hm_layer][-1], unit_dict[hm_layer][-4]], unit_dict[vm_layer][2])
                 if not (yidx == ny - ny_dum and xidx == (nx - nx_dum - 1 if ny_core % 2 else nx_dum)):
@@ -450,29 +481,7 @@ class ResLadder(ResArrayBase):
         w_sup_xm = tr_manager.get_width(xm_layer, 'sup')
         w_sig_xm = tr_manager.get_width(xm_layer, 'sig')
 
-        # Extra tap connections to be consistent
-        for yidx in range(ny_core):
-            xidx = nx_core - 1 if yidx % 2 else 0
-            unit_info = full_metal_dict[(xidx + nx_dum, yidx + ny_dum)]
-            self.draw_vias_on_intersections(
-                unit_info[hm_layer][3], unit_info[vm_layer][-2 if yidx % 2 else 1])
-
-        # Draw tap wires
-        unit_height = self.place_info.height
-        xm_warr_list = []
-        for yidx in range(ny_core):
-            yc = unit_height // 2 + (yidx + ny_dum) * unit_height
-            xm_tidx_list = tr_manager.place_wires(xm_layer, ['sig'] * nx_core, center_coord=yc)[1]
-            for xidx, xm_tidx in enumerate(xm_tidx_list):
-                xloc = nx - (xidx + nx_dum) - 1 if yidx % 2 else xidx + nx_dum
-                unit_info = full_metal_dict[(xloc, + yidx + ny_dum)]
-                vm = unit_info[vm_layer][-2 if yidx % 2 else 1]
-                xm_warr_list.append(
-                    self.connect_to_tracks(vm, TrackID(xm_layer, xm_tidx, w_sig_xm)))
-
-        # Stretch tap wires left and right
-        lower = min([xm.lower for xm in xm_warr_list])
-        upper = max([xm.upper for xm in xm_warr_list])
+        xm_warr_list, lower, upper = self._connect_top_helper(full_metal_dict, x_start=nx_dum, y_start=ny_dum, x_end=nx-nx_dum, y_end=ny-ny_dum)
         xm_warr_list = self.extend_wires(xm_warr_list, lower=lower, upper=upper)
 
         # Add pins names
@@ -522,3 +531,221 @@ class ResLadder(ResArrayBase):
             self.draw_vias_on_intersections(bot_unit_info[hm_layer][0], bot_unit_info[vm_layer][2][0])
 
         return vm_w, mres_l, vm_layer
+
+    def _connect_top_parallel(
+            self, full_metal_dict: Dict[Tuple[int, int], Dict[int, List[Union[WireArray, List[WireArray]]]]]
+            ) -> Tuple[int, int, int]:
+        """Draw ladder taps connections. Resistors the width, length, layer of the metal resistor"""
+        nx = self.place_info.nx
+        ny = self.place_info.ny
+        nx_dum = self.params['nx_dum']
+        ny_dum = self.params['ny_dum']
+
+        nx_core = nx - 2 * nx_dum
+        ny_core = ny - 2 * ny_dum
+
+        tr_manager = self.tr_manager
+        conn_layer = self.place_info.conn_layer
+        hm_layer = conn_layer + 1
+        vm_layer = hm_layer + 1
+        xm_layer = vm_layer + 1
+        w_sup_xm = tr_manager.get_width(xm_layer, 'sup')
+        w_sig_xm = tr_manager.get_width(xm_layer, 'sig')
+
+        xm_warr_list_l, lower_l, upper_l = self._connect_top_helper(full_metal_dict, x_start=nx_dum, y_start=ny_dum, x_end=nx-nx_dum-1, y_end=ny-ny_dum)
+        xm_tidx_list_list = [[xm_warr_list_l[idx].track_id.base_index] for idx in range(len(xm_warr_list_l))]
+        rladder_ratio = nx - 2*nx_dum - 1 # assuming 1 column ladder
+        xm_warr_list_r, lower_r, upper_r = self._connect_top_helper(full_metal_dict, x_start=nx-nx_dum-1, y_start=ny_dum, x_end=nx-nx_dum, y_end=ny-ny_dum,
+                                                                    xm_tidx_list_list = xm_tidx_list_list[rladder_ratio-1::rladder_ratio])
+        xm_warr_list = xm_warr_list_l + xm_warr_list_r
+        lower = min(lower_l, lower_r)
+        upper = max(upper_r, upper_r)
+        
+        xm_warr_list = self.extend_wires(xm_warr_list_l, lower=lower, upper=upper)
+
+        # Add pins names
+        for xidx, xm_warr in enumerate(xm_warr_list):
+            hide = xidx == 0 and not self.grid.tech_info.has_res_metal()  # Can't isolate bottom and idx0
+            self.add_pin(f'out<{xidx}>', xm_warr, hide=hide)
+
+        # Draw top and bottom
+        bot_unit_info = full_metal_dict[(nx_dum, ny_dum)]
+        bot_tidx = translate_layers(self.grid, hm_layer,
+                                    bot_unit_info[hm_layer][0].track_id.base_index, xm_layer)
+        avail_bot_tidx = tr_manager.get_next_track(xm_layer, xm_warr_list[0].track_id.base_index, 'sig', 'sup', -1)
+        bot_tidx = min(bot_tidx, avail_bot_tidx)
+        bot_warr = self.connect_to_tracks(
+            bot_unit_info[vm_layer][2][0], TrackID(xm_layer, bot_tidx, w_sup_xm), track_lower=lower, track_upper=upper)
+        # sub rladder
+        bot_unit_info = full_metal_dict[(nx - nx_dum - 1, ny_dum)]
+        bot_tidx = translate_layers(self.grid, hm_layer,
+                                    bot_unit_info[hm_layer][0].track_id.base_index, xm_layer)
+        avail_bot_tidx = tr_manager.get_next_track(xm_layer, xm_warr_list[0].track_id.base_index, 'sig', 'sup', -1)
+        bot_tidx = min(bot_tidx, avail_bot_tidx)
+        bot_warr = self.connect_to_tracks(
+            bot_unit_info[vm_layer][2][0], TrackID(xm_layer, bot_tidx, w_sup_xm), track_lower=lower, track_upper=upper)
+        self.add_pin('VSS' if self.params['bot_vss'] else 'bottom', bot_warr)
+
+        top_unit_info = full_metal_dict[(nx - nx_dum - 1 if ny_core % 2 else nx_dum, ny - ny_dum - 1)]
+        top_tidx = translate_layers(self.grid, hm_layer,
+                                    top_unit_info[hm_layer][-1].track_id.base_index, xm_layer)
+        avail_top_tidx = tr_manager.get_next_track(xm_layer, xm_warr_list[-1].track_id.base_index, 'sig', 'sup', 1)
+        top_tidx = max(top_tidx, avail_top_tidx)
+        top_warr = self.connect_to_tracks(
+            top_unit_info[vm_layer][2][-1], TrackID(xm_layer, top_tidx, w_sup_xm), track_lower=lower, track_upper=upper)
+        self.add_pin('VDD' if self.params['top_vdd'] else 'top', top_warr)
+
+        # Add metal resistor between bottom and out<0>
+        mres_l = self.params['mres_l']
+        w_sig_hm = tr_manager.get_width(hm_layer, 'sig')
+        hm_w = self.grid.get_wire_total_width(hm_layer, w_sig_hm)
+        w_sig_vm = tr_manager.get_width(vm_layer, 'sig')
+        vm_w = self.grid.get_wire_total_width(vm_layer, w_sig_vm)
+        ext_x, ext_y = self.grid.get_via_extensions(Direction.LOWER, hm_layer, w_sig_hm, w_sig_vm)
+        ref_info = full_metal_dict[(nx_dum, ny_dum)]
+        xl = self.grid.track_to_coord(
+            vm_layer, ref_info[vm_layer][2][0].track_id.base_index) - vm_w // 2
+        xh = xl + vm_w
+        yl = ref_info[vm_layer][2][0].bound_box.ym + hm_w // 2 + ext_y
+        yh = yl + mres_l
+        if self.has_res_metal():
+            self.add_res_metal(vm_layer, BBox(xl, yl, xh, yh))
+        # sub rladder
+        ref_info = full_metal_dict[(nx - nx_dum - 1, ny_dum)]
+        xl = self.grid.track_to_coord(
+            vm_layer, ref_info[vm_layer][2][0].track_id.base_index) - vm_w // 2
+        xh = xl + vm_w
+        yl = ref_info[vm_layer][2][0].bound_box.ym + hm_w // 2 + ext_y
+        yh = yl + mres_l
+        if self.has_res_metal():
+            self.add_res_metal(vm_layer, BBox(xl, yl, xh, yh))
+
+        # Add extra conn if appropriate
+        if self.params['top_vdd'] and self._sup_name == 'VDD':
+            self.draw_vias_on_intersections(top_unit_info[hm_layer][-1], top_unit_info[vm_layer][2][1])
+        if self.params['bot_vss'] and self._sup_name == 'VSS':
+            self.draw_vias_on_intersections(bot_unit_info[hm_layer][0], bot_unit_info[vm_layer][2][0])
+
+        return vm_w, mres_l, vm_layer
+
+    def _connect_ladder_helper(self,
+                        full_metal_dict: Dict[Tuple[int, int], Dict[int, List[Union[WireArray, List[WireArray]]]]], 
+                        x_start: int, y_start: int, x_end: int, y_end: int):
+        # TODO: simplify the logic here
+        conn_layer = self.place_info.conn_layer
+        hm_layer = conn_layer + 1
+        vm_layer = hm_layer + 1
+        # Connect from bottom up
+        ny_core = y_end - y_start
+        nx_core = x_end - x_start
+        for yidx in range(ny_core):
+            if nx_core == 1:
+                unit_dict = full_metal_dict[(x_start , y_start + yidx)]
+                if yidx < ny_core - 1:
+                    warr_bot = full_metal_dict[(x_start , y_start + yidx)][vm_layer][1 if yidx % 2 else 3]
+                    warr_top = full_metal_dict[(x_start , y_start + yidx + 1)][vm_layer][1 if yidx % 2 else 3]
+                    self.connect_wires([warr_bot, warr_top])
+                for idx in range(len(unit_dict[vm_layer])):
+                    self.add_pin(f'{yidx}_vm{idx}', unit_dict[vm_layer][idx], hide=True)
+               
+                # self.connect_wires(unit_dict[vm_layer][2 if yidx % 2 else 3])
+                self.draw_vias_on_intersections(
+                    unit_dict[hm_layer][-4 if yidx % 2 else 3],
+                    unit_dict[vm_layer][2])
+                self.draw_vias_on_intersections(
+                    [unit_dict[hm_layer][3 if yidx % 2 else -4],
+                        unit_dict[hm_layer][1 if yidx % 2 else -2][-1]],
+                    unit_dict[vm_layer][3])
+            else:
+                for xidx in range(nx_core):
+                    unit_dict = full_metal_dict[(x_start + xidx, y_start + yidx)]
+                    # Avoid using connect warrs. We want to match the wires
+                    if xidx == 0:
+                        self.draw_vias_on_intersections(
+                            unit_dict[hm_layer][-4 if yidx % 2 else 3],
+                            unit_dict[vm_layer][2])
+                        self.draw_vias_on_intersections(
+                            [unit_dict[hm_layer][3 if yidx % 2 else -4],
+                            unit_dict[hm_layer][1 if yidx % 2 else -2][-1]],
+                            unit_dict[vm_layer][3])
+                    elif xidx == nx_core - 1:
+                        self.draw_vias_on_intersections(
+                            unit_dict[hm_layer][3 if yidx % 2 else -4],
+                            unit_dict[vm_layer][2])
+                        self.draw_vias_on_intersections(
+                            unit_dict[hm_layer][-4 if yidx % 2 else 3],
+                            unit_dict[vm_layer][1])
+                        self.draw_vias_on_intersections(
+                            unit_dict[hm_layer][1 if (yidx % 2) ^ (nx_core % 2) else -2],
+                            unit_dict[vm_layer][1])
+                    else:
+                        if xidx % 2 == 1:
+                            self.draw_vias_on_intersections(
+                                [unit_dict[hm_layer][3 if yidx % 2 else -4],
+                                unit_dict[hm_layer][1 if yidx % 2 else -2][0]],
+                                unit_dict[vm_layer][1])
+                            self.draw_vias_on_intersections(
+                                [unit_dict[hm_layer][-4 if yidx % 2 else 3],
+                                unit_dict[hm_layer][-2 if yidx % 2 else 1][-1]],
+                                unit_dict[vm_layer][-2])
+                        else:
+                            self.draw_vias_on_intersections(
+                                [unit_dict[hm_layer][3 if yidx % 2 else -4],
+                                unit_dict[hm_layer][1 if yidx % 2 else -2][-1]],
+                                unit_dict[vm_layer][-2])
+                            self.draw_vias_on_intersections(
+                                [unit_dict[hm_layer][-4 if yidx % 2 else 3],
+                                unit_dict[hm_layer][-2 if yidx % 2 else 1][0]],
+                                unit_dict[vm_layer][1])
+
+    def _connect_top_helper(
+            self, full_metal_dict: Dict[Tuple[int, int], Dict[int, List[Union[WireArray, List[WireArray]]]]],
+            x_start: int, y_start: int, x_end: int, y_end: int, 
+            xm_tidx_list_list: Optional[List[List[HalfInt]]] = None) -> Tuple[List[Union[WireArray, List[WireArray]]], int, int]:
+        """Draw ladder taps connections. Resistors the width, length, layer of the metal resistor"""
+        nx = self.place_info.nx
+        # ny = self.place_info.ny
+        nx_dum = self.params['nx_dum']
+        # ny_dum = self.params['ny_dum']
+
+        nx_core = x_end - x_start
+        ny_core = y_end - y_start
+
+        tr_manager = self.tr_manager
+        conn_layer = self.place_info.conn_layer
+        hm_layer = conn_layer + 1
+        vm_layer = hm_layer + 1
+        xm_layer = vm_layer + 1
+        w_sup_xm = tr_manager.get_width(xm_layer, 'sup')
+        w_sig_xm = tr_manager.get_width(xm_layer, 'sig')
+
+        # Extra tap connections to be consistent
+        for yidx in range(ny_core):
+            xidx = nx_core - 1 if yidx % 2 else 0
+            unit_info = full_metal_dict[(xidx + x_start, yidx + y_start)]
+            self.draw_vias_on_intersections(
+                unit_info[hm_layer][3], unit_info[vm_layer][-2 if yidx % 2 else 1])
+       
+        # Draw tap wires
+        unit_height = self.place_info.height
+        xm_warr_list = []
+        for yidx in range(ny_core):
+            if xm_tidx_list_list is None:
+                yc = unit_height // 2 + (yidx + y_start) * unit_height
+                xm_tidx_list = tr_manager.place_wires(xm_layer, ['sig'] * nx_core, center_coord=yc)[1]
+            else:
+                xm_tidx_list = xm_tidx_list_list[yidx]
+            for xidx, xm_tidx in enumerate(xm_tidx_list):
+                xloc = x_end - xidx - 1 if yidx % 2 else xidx + x_start
+                unit_info = full_metal_dict[(xloc, + yidx + y_start)]
+                vm = unit_info[vm_layer][-2 if yidx % 2 else 1]
+                xm_warr_list.append(
+                    self.connect_to_tracks(vm, TrackID(xm_layer, xm_tidx, w_sig_xm)))
+
+        # Stretch tap wires left and right
+        lower = min([xm.lower for xm in xm_warr_list])
+        upper = max([xm.upper for xm in xm_warr_list])
+ 
+        return xm_warr_list, lower, upper
+
+   

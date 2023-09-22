@@ -39,23 +39,23 @@ from bag.design.module import Module
 from bag.design.database import ModuleDB
 from bag.util.immutable import Param
 
-from pybag.enum import TermType
-
 
 # noinspection PyPep8Naming
-class bag3_analog__rdac(Module):
-    """Module for library bag3_analog cell rdac.
+class bag3_analog__res_ladder_parallel(Module):
+    """Module for library bag3_analog cell res_ladder_parallel.
 
     Fill in high level description here.
     """
 
     yaml_file = pkg_resources.resource_filename(__name__,
                                                 str(Path('netlist_info',
-                                                         'rdac.yaml')))
+                                                         'res_ladder_parallel.yaml')))
 
     def __init__(self, database: ModuleDB, params: Param, **kwargs: Any) -> None:
         Module.__init__(self, self.yaml_file, database, params, **kwargs)
-
+        self.has_idx0 = False  # True if idx 0 is there. Requires metal resistors to isolate idx0 from bottom
+        self.top_vdd = False  # Set in design. Used in RDAC level
+        self.bot_vss = False
     @classmethod
     def get_params_info(cls) -> Mapping[str, str]:
         """Returns a dictionary from parameter names to descriptions.
@@ -66,16 +66,11 @@ class bag3_analog__rdac(Module):
             dictionary from parameter names to descriptions.
         """
         return dict(
-            res_params='Parameters for res_ladder',
-            dec_params='Parameters for rdac_decoder',
-            num_dec='Number of decoders for one res_ladder',
+            rladder_main_params='main resistor ladder params',
+            rladder_sub_params='sub resistor ladder params',
         )
 
-    @classmethod
-    def get_default_param_values(cls) -> Mapping[str, Any]:
-        return dict(num_dec=1)
-
-    def design(self, res_params: Mapping[str, Any], dec_params: Mapping[str, Any], num_dec: int) -> None:
+    def design(self, rladder_main_params: Param, rladder_sub_params: Param) -> None:
         """To be overridden by subclasses to design this module.
 
         This method should fill in values for all parameters in
@@ -91,52 +86,32 @@ class bag3_analog__rdac(Module):
         restore_instance()
         array_instance()
         """
-        self.instances['XDEC'].design(**dec_params)
-        num_sel_row: int = dec_params['row_params']['num_sel']
-        num_sel_col: int = dec_params['col_params']['num_sel']
-        num_sel = num_sel_col + num_sel_row
-        sel_suf = f'<{num_sel - 1}:0>'
-        num_in = 1 << num_sel
-        sel_pin = f'sel{sel_suf}'
+        nx_m = rladder_main_params['nx']
+        ny_m = rladder_main_params['ny']
+        nx_dum_m = rladder_main_params['nx_dum']
+        ny_dum_m = rladder_main_params['ny_dum']
+        num_out_m = (nx_m-2*nx_dum_m)*(ny_m-2*ny_dum_m)
 
-        if res_params.get('rladder_main_params'):
-            self.replace_instance_master('XRES', 'bag3_analog', 'res_ladder_parallel')
-        self.instances['XRES'].design(**res_params)
-        # Check if ladder has idx0
-        has_idx0 = self.instances['XRES'].master.has_idx0
-        if has_idx0:
-            _suf = f'<{num_in - 1}:0>'
-            res_term = f'out{_suf}'
-            dec_net = dec_term = res_net = f'in{_suf}'
-        else:
-            dec_suf = f'<{num_in - 1}:0>' 
-            res_suf = f'<{num_in - 1}:1>'
-            bot_name = "VSS" if self.instances['XRES'].master.bot_vss else "bottom"
-            
-            res_term = f'out{res_suf}'
-            res_net = f'in{res_suf}'
-            dec_term = f'in{dec_suf}'
-            dec_net = f'{res_net},{bot_name}'
+        nx_s = rladder_sub_params['nx']
+        ny_s = rladder_sub_params['ny']
+        nx_dum_s = rladder_sub_params['nx_dum']
+        ny_dum_s = rladder_sub_params['ny_dum']
+        num_out_s = (nx_s-2*nx_dum_s)*(ny_s-2*ny_dum_s)
 
-        self.reconnect_instance('XRES', [(res_term, res_net), ('VDD', 'VDD'), ('VSS', 'VSS')])
+        self.instances['XRES_M'].design(**rladder_main_params)
+        self.instances['XRES_S'].design(**rladder_sub_params)
+        ratio = num_out_m//num_out_s
+       
+        term_list_m = [('VDD', 'VDD'), ('VSS', 'VSS'), (f'out<{num_out_m-1}:0>', f'out<{num_out_m-1}:0>')]
+        term_list_s = [('VDD', 'VDD'), ('VSS', 'VSS'), (f'out<{num_out_s-1}:0>', f'out<{num_out_m-1}:{ratio-1}:{ratio}>')]
+        self.reconnect_instance('XRES_M', term_list_m)
+        self.reconnect_instance('XRES_S', term_list_s)
 
-        if num_dec == 2:
-            sel0_pin = f'sel0{sel_suf}'
-            sel1_pin = f'sel1{sel_suf}'
-            self.rename_pin('sel', sel0_pin)
-            self.add_pin(sel1_pin, TermType.input)
+        self.rename_pin('out', f'out<{num_out_m-1}:0>')
+        self.rename_pin('top', 'VDD')
+        self.rename_pin('bottom', 'VSS')
+        self.remove_pin('BULK')
 
-            self.rename_pin('out', 'out0')
-            self.add_pin('out1', TermType.output)
-
-            self.array_instance('XDEC', inst_term_list=[('XDEC0', [(sel_pin, sel0_pin), (dec_term, dec_net),
-                                                                   ('out', 'out0')]),
-                                                        ('XDEC1', [(sel_pin, sel1_pin), (dec_term, dec_net),
-                                                                   ('out', 'out1')])])
-        elif num_dec == 1:
-            self.rename_pin('sel', sel_pin)
-            self.reconnect_instance('XDEC', [(sel_pin, sel_pin), (dec_term, dec_net)])
-        else:
-            raise ValueError(f'num_dec={num_dec} is not supported yet. Use 1 or 2.')
-
-
+        self.has_idx0 = self.instances['XRES_M'].master.has_idx0
+        self.top_vdd = self.instances['XRES_M'].master.top_vdd
+        self.bot_vss = self.instances['XRES_M'].master.bot_vss
