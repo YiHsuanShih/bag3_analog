@@ -64,10 +64,16 @@ class ResLadder(ResArrayBase):
     def core_coord0(self) -> int:
         return self._core_coord0
 
-    @classmethod
-    def get_schematic_class(cls) -> Optional[Type[Module]]:
-        return bag3_analog__res_ladder_parallel
-        # return bag3_analog__res_ladder
+    def get_schematic_class_inst(self) -> Optional[Type[Module]]:
+        if self.params['parallel_ladder']:
+            return bag3_analog__res_ladder_parallel
+        else:
+            return bag3_analog__res_ladder
+
+    # @classmethod
+    # def get_schematic_class(cls) -> Optional[Type[Module]]:
+    #     return bag3_analog__res_ladder_parallel
+    #     # return bag3_analog__res_ladder_parallel
 
     @classmethod
     def get_params_info(cls) -> Dict[str, str]:
@@ -78,11 +84,12 @@ class ResLadder(ResArrayBase):
             top_vdd='True to make the top connection VDD',
             bot_vss='True to make the bottom connection VSS',
             mres_l='Length of vm_layer metal resistors between bottom and out<0>',
+            parallel_ladder='Ture to have parallal ladder (only implement for one column now)',
         )
 
     @classmethod
     def get_default_param_values(cls) -> Dict[str, Any]:
-        return dict(nx_dum=0, ny_dum=0, top_vdd=True, bot_vss=True, mres_l=100)
+        return dict(nx_dum=0, ny_dum=0, top_vdd=True, bot_vss=True, mres_l=100, parallel_ladder=False)
 
     def draw_layout(self) -> None:
         """General strategy to achieve good wire matching:
@@ -101,58 +108,63 @@ class ResLadder(ResArrayBase):
 
         assert pinfo.top_layer >= pinfo.conn_layer + 3
 
-        unit_metal_dict = self._draw_unit_metal()
-        full_metal_dict = self._array_metal_and_connect(unit_metal_dict)
-        # self._connect_ladder(full_metal_dict)
-        self._connect_ladder_parallel(full_metal_dict)
-        # self._connect_dummies(full_metal_dict)
-        self._connect_dummies_parallel(full_metal_dict)
-        self._connect_supplies_and_substrate(full_metal_dict)
-        # mres_info = self._connect_top(full_metal_dict)
-        mres_info = self._connect_top_parallel(full_metal_dict)
-        # mres_info = [1, 2, 3]
+        parallel_ladder = self.params['parallel_ladder']
         ny_dum: int = self.params['ny_dum']
         self._core_coord0 = pinfo.height * ny_dum
-        shared_params = dict(
-            w=pinfo.w_res,
-            l=pinfo.l_res,
-            res_type=pinfo.res_type,
-            top_vdd=self.params['top_vdd'],
-            bot_vss=self.params['bot_vss'],
-            sup_name=self._sup_name,
-            mres_info=mres_info,
-        )
-        rladder_main_params=dict(
-            nx=pinfo.nx - 1,
-            ny=pinfo.ny,
-            nx_dum=self.params['nx_dum'],
-            ny_dum=ny_dum,
-            **shared_params,
-        )
-        rladder_sub_params=dict(
-            nx=1,
-            ny=pinfo.ny,
-            nx_dum=0,
-            ny_dum=ny_dum,
-            **shared_params,
-        )
-        self.sch_params = dict(
-            rladder_main_params=rladder_main_params,
-            rladder_sub_params=rladder_sub_params,
-        )
-        # self.sch_params = dict(
-        #     w=pinfo.w_res,
-        #     l=pinfo.l_res,
-        #     res_type=pinfo.res_type,
-        #     nx=pinfo.nx,
-        #     ny=pinfo.ny,
-        #     nx_dum=self.params['nx_dum'],
-        #     ny_dum=ny_dum,
-        #     top_vdd=self.params['top_vdd'],
-        #     bot_vss=self.params['bot_vss'],
-        #     sup_name=self._sup_name,
-        #     mres_info=mres_info,
-        # )
+
+        unit_metal_dict = self._draw_unit_metal()
+        full_metal_dict = self._array_metal_and_connect(unit_metal_dict)
+        if parallel_ladder:
+            self._connect_ladder_parallel(full_metal_dict)
+            self._connect_dummies_parallel(full_metal_dict)
+            self._connect_supplies_and_substrate(full_metal_dict)
+            mres_info = self._connect_top_parallel(full_metal_dict)
+            shared_params = dict(
+                w=pinfo.w_res,
+                l=pinfo.l_res,
+                res_type=pinfo.res_type,
+                top_vdd=self.params['top_vdd'],
+                bot_vss=self.params['bot_vss'],
+                sup_name=self._sup_name,
+                mres_info=mres_info,
+            )
+            rladder_main_params=dict(
+                nx=pinfo.nx - 1,
+                ny=pinfo.ny,
+                nx_dum=self.params['nx_dum'],
+                ny_dum=ny_dum,
+                **shared_params,
+            )
+            rladder_sub_params=dict(
+                nx=1,
+                ny=pinfo.ny,
+                nx_dum=0,
+                ny_dum=ny_dum,
+                **shared_params,
+            )
+            self.sch_params = dict(
+                rladder_main_params=rladder_main_params,
+                rladder_sub_params=rladder_sub_params,
+            )
+        else:   
+            self._connect_ladder(full_metal_dict)
+            self._connect_dummies(full_metal_dict)
+            self._connect_supplies_and_substrate(full_metal_dict)
+            mres_info = self._connect_top(full_metal_dict)
+
+            self.sch_params = dict(
+                w=pinfo.w_res,
+                l=pinfo.l_res,
+                res_type=pinfo.res_type,
+                nx=pinfo.nx,
+                ny=pinfo.ny,
+                nx_dum=self.params['nx_dum'],
+                ny_dum=ny_dum,
+                top_vdd=self.params['top_vdd'],
+                bot_vss=self.params['bot_vss'],
+                sup_name=self._sup_name,
+                mres_info=mres_info,
+            )
 
     def _draw_unit_metal(self) -> Dict[int, List[Union[WireArray, List[WireArray]]]]:
         """Draws metal wires over a unit cell. Returns all the metal wire arrays"""
